@@ -51,6 +51,7 @@ namespace TLP {
 		// [1] Section 2.2.1
 		//
 		Type_MRdWr = 0,
+		Type_IoRdWr = 2,
 		Type_CfgRdWr_type0 = 4,
 		Type_CfgRdWr_type1 = 5,
 		Type_Cpl = 10,

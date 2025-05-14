@@ -134,6 +134,7 @@ public:
 			switch (get_type()) {
 			case Type_CfgRdWr_type0:
 			case Type_MRdWr:
+			case Type_IoRdWr:
 				return get_fmt_data_bit() == 0;
 			default:
 				break;
@@ -344,18 +345,11 @@ public:
 			if (gp->is_write()) {
 				uint8_t *d = gp->get_data_ptr();
 				uint32_t val = 0;
+				unsigned int start_idx = get_ECAMAddr_BE(addr);
 
-				if (dlen > 0) {
-					val |= d[0] << 24;
-				}
-				if (dlen > 1) {
-					val |= d[1] << 16;
-				}
-				if (dlen > 2) {
-					val |= d[2] <<  8;
-				}
-				if (dlen > 3) {
-					val |= d[3];
+				for (unsigned int i = 0; i < dlen; i++) {
+					uint32_t shift = (3 - start_idx - i) * 8;
+					val |= d[i] << shift;
 				}
 				m_hdr.push_back(val);
 			}
@@ -701,6 +695,217 @@ public:
 		uint32_t m_tlp_dw_len;
 	};
 
+	class TLP_IO: public TLPHdr_Base
+	{
+	public:
+		//
+		// For bits [63:32]
+		//
+		GEN_TLP_HDR_FIELD_FUNCS(1, requestorID, 16, 16);
+		GEN_TLP_HDR_FIELD_FUNCS(1, tag, 8, 8);
+		GEN_TLP_HDR_FIELD_FUNCS(1, lastDWBE, 4, 4);
+		GEN_TLP_HDR_FIELD_FUNCS(1, firstDWBE, 0, 4);
+
+		//
+		// For bits [95:64] on the 3DW header
+		//
+		GEN_TLP_HDR_FIELD_FUNCS(2, 3DWHdr_addr_31_2, 2, 30);
+		GEN_TLP_HDR_FIELD_FUNCS(2, 3DWHdr_ph, 0, 2);
+
+		GEN_FIELD_FUNCS(addr_32_2, 2, 30);
+
+		//
+		// Generates 3DW header
+		//
+		TLP_IO(tlm::tlm_generic_payload *gp) :
+			TLPHdr_Base(gp),
+			m_tlp_data(nullptr),
+			m_tlp_dw_len(0)
+		{
+			uint64_t addr = gp->get_address();
+			uint32_t fmt = gp->is_write() ?
+					FMT_3DW_WithData : FMT_3DW_NoData;
+			uint32_t firstDWBE = 0;
+			uint32_t lastDWBE = 0;
+			genattr_extension *genattr;
+			uint32_t masterID = 0;
+			uint32_t txID = 0;
+			uint32_t dlen = 1;
+
+			// Bits [31:0]
+			m_hdr.push_back(set_fmt(fmt) |
+					set_type(Type_IoRdWr) |
+
+					set_t9(0) |
+					set_tc(0) |
+					set_t8(0) |
+					set_attr2(0) |
+					set_ln(0) |
+					set_th(0) |
+
+					set_td(0) |
+					set_ep(0) |
+					set_attr_1_0(0) |
+					set_at(0) |
+
+					set_length(dlen));
+
+			//
+			// Bits [63:32]
+			//
+			gp->get_extension(genattr);
+			if (genattr) {
+				masterID = genattr->get_master_id();
+				txID = genattr->get_transaction_id();
+			}
+
+			m_hdr.push_back(
+				set_requestorID(masterID) |
+				set_tag(txID) |
+				set_lastDWBE(lastDWBE) |
+				set_firstDWBE(firstDWBE));
+
+			//
+			// Bits [95:64] on the 3DW header
+			//
+			addr = get_addr_32_2(addr & 0xFFFFFFFF);
+			m_hdr.push_back(set_3DWHdr_addr_31_2(addr) |
+					set_3DWHdr_ph(0));
+
+			//
+			// Data if it is a write packet
+			//
+			if (gp->is_write()) {
+				uint8_t *d = gp->get_data_ptr();
+				unsigned int len = gp->get_data_length();
+				uint32_t pos = 0;
+
+				while (pos < len) {
+					uint32_t val = 0;
+
+					if (len > 0) {
+						val |= d[pos++] << 24;
+					}
+					if (len > 1) {
+						val |= d[pos++] << 16;
+					}
+					if (len > 2) {
+						val |= d[pos++] <<  8;
+					}
+					if (len > 3) {
+						val |= d[pos++];
+					}
+					m_hdr.push_back(val);
+				}
+
+				//
+				// Memory Writes are posted, 2.1.1.1 [1]
+				//
+				m_done = true;
+				gp->set_response_status(tlm::TLM_OK_RESPONSE);
+			}
+
+			//
+			// Setup m_tlp
+			//
+			// command should perhaps always be TLM_WRITE_COMMAND???
+			//
+			// (Check TLM spec if read means data can be manipulated)
+			//
+			m_tlp.set_command(gp->get_command());
+			m_tlp.set_address(0); // unused
+
+			m_tlp.set_data_ptr(reinterpret_cast<uint8_t*>(m_hdr.data()));
+			m_tlp.set_data_length(m_hdr.size() * 4);
+			m_tlp.set_byte_enable_ptr(nullptr);
+			m_tlp.set_byte_enable_length(0);
+			m_tlp.set_streaming_width(m_hdr.size() * 4);
+			m_tlp.set_dmi_allowed(false);
+			m_tlp.set_response_status(tlm::TLM_INCOMPLETE_RESPONSE);
+		}
+
+		TLP_IO(uint8_t *hdr,  unsigned int b_len) :
+			TLPHdr_Base(nullptr),
+			m_tlp_data(nullptr),
+			m_tlp_dw_len(0)
+		{
+			unsigned int i = 0;
+			uint32_t fmt;
+
+			assert(b_len == TLPHdr_3DW_Sz);
+
+			for (; i < TLPHdr_3DW_Sz; i+=4) {
+				uint32_t val = hdr[i] << 24 |
+						hdr[i+1] << 16 |
+						hdr[i+2] << 8 |
+						hdr[i+3];
+
+				m_hdr.push_back(val);
+			}
+
+			m_tlp_dw_len = get_length() ? get_length() : MAX_DW_LEN;
+
+			if (fmt == FMT_3DW_WithData) {
+				uint32_t data_u32_idx = i / 4;
+				uint32_t *data_u32;
+				uint8_t *data;
+
+				assert(b_len >= (i + m_tlp_dw_len * 4));
+
+				//
+				// Copy the data
+				//
+				data = &hdr[i];
+				for (uint32_t j = 0; j < (m_tlp_dw_len * 4); j+=4) {
+					uint32_t *val = reinterpret_cast<uint32_t*>(&data[j]);
+					m_hdr.push_back(val[0]);
+				}
+
+				//
+				// Store the data location
+				//
+				data_u32 = &(m_hdr.data()[data_u32_idx]);
+			        m_tlp_data = reinterpret_cast<uint8_t*>(data_u32);
+			}
+		}
+
+		uint32_t GetTLPDWLength() { return m_tlp_dw_len; }
+		uint8_t *GetTLPData() { return m_tlp_data; }
+
+		//
+		// Section 2.2.7 [1]
+		//
+		uint32_t GetTxID()
+		{
+			return get_requestorID() << 16 | get_t9() << 9 |
+				get_t8() << 8 | get_tag();
+		}
+
+		bool IsMemRd()
+		{
+			//
+			// FMT_3DW_NoData is read
+			//
+			switch(get_fmt()) {
+				case FMT_3DW_NoData:
+					return true;
+				default:
+					break;
+			}
+			return false;
+		}
+
+		uint32_t GetAddress()
+		{
+			uint32_t addr = get_3DWHdr_addr_31_2() << 2;
+
+			return addr;
+		}
+
+		uint8_t *m_tlp_data;
+		uint32_t m_tlp_dw_len;
+	};
+
 	class TLP_Cpl: public TLPHdr_Base
 	{
 	public:
@@ -998,8 +1203,9 @@ public:
 
 	void io_b_transport(tlm::tlm_generic_payload& trans, sc_time& delay)
 	{
-		SC_REPORT_ERROR("tlm2tlp-bridge",
-			"I/O transactions are currently not supported");
+		//SC_REPORT_ERROR("tlm2tlp-bridge",
+		//	"I/O transactions are currently not supported");
+		transmit<TLP_IO>(trans, delay);
 	}
 
 	void msg_b_transport(tlm::tlm_generic_payload& trans, sc_time& delay)

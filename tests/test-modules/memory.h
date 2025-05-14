@@ -40,8 +40,8 @@ public:
 	virtual unsigned int transport_dbg(tlm::tlm_generic_payload& trans);
 
 private:
-	uint8_t *mem;
+	//uint8_t *mem;
+	//bool free_mem;
 	off_t size;
-
-	bool free_mem;
+	map<sc_dt::uint64, unsigned char> mem_map;
 };
