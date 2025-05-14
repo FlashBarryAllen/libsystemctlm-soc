@@ -38,6 +38,9 @@ using namespace std;
 #include "tlm_utils/simple_target_socket.h"
 #include "data-transfer.h"
 #include "itraffic-desc.h"
+#include <tinyxml2.h>
+
+using namespace tinyxml2;
 
 SC_MODULE(TLMTrafficGenerator)
 {
@@ -86,6 +89,111 @@ SC_MODULE(TLMTrafficGenerator)
 								threadId,
 								c);
 	}
+
+	// 解析数据字符串为字节数组
+	std::vector<uint8_t> parseDataString(const std::string& dataStr) {
+		std::vector<uint8_t> byteArray;
+		std::istringstream iss(dataStr);
+		std::string token;
+		
+		// 移除开头的 '{'
+		if (!dataStr.empty() && dataStr[0] == '{') {
+			iss.ignore(1);
+		}
+		
+		// 解析每个字节值
+		while (std::getline(iss, token, ',')) {
+			// 移除空白字符和 '0x' 前缀
+			token.erase(0, token.find_first_not_of(" \t\n\r\f\v"));
+			token.erase(token.find_last_not_of(" \t\n\r\f\v") + 1);
+			
+			if (token.size() >= 2 && token[0] == '0' && std::tolower(token[1]) == 'x') {
+				token = token.substr(2);
+			}
+			
+			// 转换16进制字符串为字节
+			try {
+				uint8_t byte = static_cast<uint8_t>(std::stoul(token, nullptr, 16));
+				byteArray.push_back(byte);
+			} catch (...) {
+				std::cerr << "解析数据失败: " << token << std::endl;
+			}
+		}
+		
+		return byteArray;
+	}
+
+	DataTransferVec get_config(const char* xml_file) {
+		XMLDocument doc;
+		XMLError eResult = doc.LoadFile(xml_file);
+	
+		if (eResult != XML_SUCCESS) {
+			cerr << "Error loading XML file: " << doc.ErrorName() << endl;
+		}
+	
+		XMLElement* root = doc.FirstChildElement("gen");
+		if (root == nullptr) {
+			cerr << "Error: Could not find the root element 'gen'." << endl;
+		}
+		
+		XMLElement* cmdElement = root->FirstChildElement("cmd");
+		while (cmdElement != nullptr) {
+			DataTransfer transfer;
+			uint64_t addr = 0;
+			const char* data_ptr = nullptr;
+			std::vector<char> byte_vector;
+			uint64_t length = 0;
+
+			const XMLAttribute* nameAttribute = cmdElement->FindAttribute("name");
+	
+			if (nameAttribute) {
+				string name = nameAttribute->Value();
+	
+				if (name == "WRITE") {
+					cmdElement->QueryAttribute("addr", &addr);
+					cmdElement->QueryAttribute("data", &data_ptr);
+					std::string dataStr(data_ptr);
+        
+					// 解析数据
+					std::vector<uint8_t> dataBytes = parseDataString(dataStr);
+					unsigned char* data = new unsigned char[dataBytes.size()];
+					int i = 0;
+					for (auto byte : dataBytes) {
+						transfer.length++;
+						data[i++] = byte;
+						//std::cout << "0x" << std::hex << static_cast<int>(byte) << " ";
+					}
+					//std::cout << std::endl;
+
+					transfer.cmd = DataTransfer::WRITE;
+					transfer.addr = addr;
+					transfer.data = data;
+					transfer.streaming_width = 4;
+				} else if (name == "READ") {
+					cmdElement->QueryAttribute("addr", &addr);
+					cmdElement->QueryAttribute("length", &length);
+					transfer.cmd = DataTransfer::READ;
+					transfer.addr = addr;
+					transfer.length = length;
+					transfer.streaming_width = 4;
+				} else {
+					cout << " - Unknown command type." << endl;
+				}
+			} else {
+				cerr << "Error: 'name' attribute not found in a 'cmd' element." << endl;
+			}
+
+			m_data_transfers.push_back(transfer);
+	
+			// 移动到下一个同级的 <cmd> 元素
+			cmdElement = cmdElement->NextSiblingElement("cmd");
+		}
+
+		return m_data_transfers;
+	}
+
+public:
+	DataTransferVec m_data_transfers;
 
 private:
 	class ThreadData {
