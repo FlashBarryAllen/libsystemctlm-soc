@@ -168,22 +168,57 @@ SC_MODULE(TLMTrafficGenerator)
 					transfer.cmd = DataTransfer::WRITE;
 					transfer.addr = addr;
 					transfer.data = data;
-					transfer.streaming_width = 4;
+					transfer.streaming_width = transfer.length;
+					m_data_transfers.push_back(transfer);
 				} else if (name == "READ") {
 					cmdElement->QueryAttribute("addr", &addr);
 					cmdElement->QueryAttribute("length", &length);
 					transfer.cmd = DataTransfer::READ;
 					transfer.addr = addr;
 					transfer.length = length;
-					transfer.streaming_width = 4;
+					transfer.streaming_width = length;
+					m_data_transfers.push_back(transfer);
 				} else {
-					cout << " - Unknown command type." << endl;
+					if (m_data_transfers.size() > 0) {
+						DataTransfer& last = m_data_transfers.back();
+			
+						if (name == "EXPECT") {
+							cmdElement->QueryAttribute("data", &data_ptr);
+							cmdElement->QueryAttribute("length", &length);
+							std::string dataStr(data_ptr);
+				
+							// 解析数据
+							std::vector<uint8_t> dataBytes = parseDataString(dataStr);
+							unsigned char* data = new unsigned char[dataBytes.size()];
+							int i = 0;
+							for (auto byte : dataBytes) {
+								data[i++] = byte;
+							}
+
+							last.expect = data;
+						} else if (name == "BYTEENABLE") {
+							cmdElement->QueryAttribute("data", &data_ptr);
+							cmdElement->QueryAttribute("length", &length);
+							std::string dataStr(data_ptr);
+				
+							// 解析数据
+							std::vector<uint8_t> dataBytes = parseDataString(dataStr);
+							unsigned char* data = new unsigned char[dataBytes.size()];
+							int i = 0;
+							for (auto byte : dataBytes) {
+								data[i++] = byte;
+							}
+
+							last.byte_enable = data;
+							last.byte_enable_length = length;
+						} else {
+							cout << " - Unknown command type." << endl;
+						}
+					}
 				}
 			} else {
 				cerr << "Error: 'name' attribute not found in a 'cmd' element." << endl;
 			}
-
-			m_data_transfers.push_back(transfer);
 	
 			// 移动到下一个同级的 <cmd> 元素
 			cmdElement = cmdElement->NextSiblingElement("cmd");
